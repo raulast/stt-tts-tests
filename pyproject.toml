@@ -1,0 +1,15 @@
+[project]
+name = "sttgtts"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "deep-translator>=1.11.4",
+    "faster-whisper>=1.2.1",
+    "gtts>=2.5.4",
+    "openai-whisper>=20250625",
+    "piper-tts>=1.4.1",
+    "pygame>=2.6.1",
+    "speechrecognition>=3.14.5",
+]
