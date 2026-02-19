@@ -10,6 +10,7 @@ dependencies = [
     "gtts>=2.5.4",
     "openai-whisper>=20250625",
     "piper-tts>=1.4.1",
+    "pyaudio>=0.2.14",
     "pygame>=2.6.1",
     "speechrecognition>=3.14.5",
 ]
