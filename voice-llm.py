@@ -21,6 +21,7 @@ Ctrl+C para salir.
 """
 
 import os
+
 os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
 
 import sys
@@ -42,9 +43,10 @@ from faster_whisper import WhisperModel
 OLLAMA_URL = "http://localhost:11434"
 OLLAMA_MODEL = "minimax-m2.5:cloud"
 WHISPER_MODEL_SIZE = "small"
-LANGUAGE = "es"                       # idioma de voz (entrada y salida por defecto)
+LANGUAGE = "es"  # idioma de voz (entrada y salida por defecto)
 
 # ─── Estado compartido entre hilos ────────────────────────────────────────────
+
 
 class SharedState:
     """Estado mutable compartido entre hilos, protegido por locks."""
@@ -61,6 +63,7 @@ class SharedState:
 
 
 # ─── Selección de dispositivos ────────────────────────────────────────────────
+
 
 def select_devices():
     """Selecciona micrófono y altavoz interactivamente."""
@@ -85,6 +88,7 @@ def select_devices():
 
 # ─── Whisper STT ──────────────────────────────────────────────────────────────
 
+
 def transcribe(model: WhisperModel, wav_bytes: bytes, lang: str = LANGUAGE) -> str:
     """Transcribe audio WAV bytes → texto usando Faster-Whisper."""
     segments, _ = model.transcribe(
@@ -97,6 +101,7 @@ def transcribe(model: WhisperModel, wav_bytes: bytes, lang: str = LANGUAGE) -> s
 
 
 # ─── Ollama LLM chat ─────────────────────────────────────────────────────────
+
 
 def chat_ollama(messages: list[dict], state: SharedState) -> str:
     """
@@ -141,6 +146,7 @@ def chat_ollama(messages: list[dict], state: SharedState) -> str:
 
 # ─── Reproducción con interrupción ────────────────────────────────────────────
 
+
 def play_tts(text: str, lang: str, speaker: str, state: SharedState):
     """
     Sintetiza voz con gTTS y reproduce. Puede ser interrumpida si
@@ -183,6 +189,7 @@ def play_tts(text: str, lang: str, speaker: str, state: SharedState):
 
 
 # ─── Hilo de escucha continua (detecta interrupciones) ───────────────────────
+
 
 def interrupt_listener(
     mic_idx: int,
@@ -230,6 +237,7 @@ def interrupt_listener(
 
 # ─── Escucha normal (cuando NO se reproduce audio) ───────────────────────────
 
+
 def listen_once(mic_idx: int, recognizer: sr.Recognizer) -> bytes | None:
     """Escucha una frase y devuelve los bytes WAV, o None si timeout."""
     mic = sr.Microphone(device_index=mic_idx)
@@ -244,20 +252,15 @@ def listen_once(mic_idx: int, recognizer: sr.Recognizer) -> bytes | None:
 
 # ─── Bucle principal de conversación ──────────────────────────────────────────
 
+
 def conversation_loop(mic_idx: int, speaker: str, state: SharedState):
     """Bucle: escuchar → transcribir → LLM → hablar."""
 
     print("\n[INIT] Cargando modelo Whisper...")
-    whisper_model = WhisperModel(WHISPER_MODEL_SIZE, device="cpu", compute_type="float32")
-    print("[INIT] Modelo Whisper listo.\n")
-
-    # Hilo de escucha para interrupciones
-    interrupt_thread = threading.Thread(
-        target=interrupt_listener,
-        args=(mic_idx, whisper_model, state),
-        daemon=True,
+    whisper_model = WhisperModel(
+        WHISPER_MODEL_SIZE, device="cpu", compute_type="float32"
     )
-    interrupt_thread.start()
+    print("[INIT] Modelo Whisper listo.\n")
 
     # Historial de mensajes para contexto del LLM
     messages: list[dict] = [
@@ -341,6 +344,7 @@ def conversation_loop(mic_idx: int, speaker: str, state: SharedState):
 
 
 # ─── Punto de entrada ────────────────────────────────────────────────────────
+
 
 def main():
     print("╔═══════════════════════════════════════════════╗")
