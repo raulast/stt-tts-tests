@@ -36,6 +36,18 @@ def piper_talk(text, lang="es"):
     end_time = time.time()
     print(f"Piper ({lang}) Time taken: {end_time - start_time} seconds")
     return wav_file
+
+def gtts_talk(text, lang="es"):
+    start_time = time.time()
+    tts = gtts.gTTS(text=text, lang=lang)
+    wav_file = BytesIO()
+    tts.write_to_fp(wav_file)
+    wav_file.seek(0)
+    playFile(wav_file)
+    end_time = time.time()
+    print(f"gTTS ({lang}) Time taken: {end_time - start_time} seconds")
+    return wav_file
+    
     
 
 def playFile(filename):
@@ -80,6 +92,9 @@ def main():
     wav_file_es.seek(0)
     audio_bytes = wav_file_es.read()
     _ = piper_talk(text="Hello, how are you? I would like to know if you can help me with something.", lang="en")
+    _ = gtts_talk(text="Hola, ¿cómo estás?. Quisiera saber si me puedes ayudar con algo.", lang="es")
+    _ = gtts_talk(text="Hello, how are you? I would like to know if you can help me with something.", lang="en")
+   
 
     # SpeechRecognition
     start_time = time.time()
