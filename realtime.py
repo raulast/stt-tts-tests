@@ -1,16 +1,17 @@
 """
 realtime.py
 -----------
-Cuatro procesos completamente separados:
+Cinco procesos completamente separados:
 
-  CAPTURA  →  audio_queue  →  STT  →  stt_queue  →  TRANSLATE  →  translated_queue  →  PLAY
+  CAPTURA → audio_queue → STT → stt_queue → TRANSLATE → translated_queue
+          → PREPROCES OUTPUT → output_queue → PLAY
 
-  - [CAPTURA]   : escucha el micrófono de forma continua; encola chunks WAV
-                  cuando detecta fin de frase (silencio) o tras el límite de tiempo.
-  - [STT]       : transcribe cada chunk WAV con Faster-Whisper y encola el texto.
-  - [TRANSLATE] : si input_lang ≠ output_lang traduce el texto; de lo contrario lo
-                  pasa sin modificar. Encola el texto final.
-  - [PLAY]      : sintetiza voz con gTTS y reproduce con pygame.
+  - [CAPTURA]          : escucha el micrófono; encola chunks WAV.
+  - [STT]              : transcribe con Faster-Whisper; encola el texto.
+  - [TRANSLATE]        : traduce si input_lang ≠ output_lang; encola texto final.
+  - [PREPROCES OUTPUT] : sintetiza voz con gTTS y acelera el audio un 30%;
+                         encola los bytes WAV listos para reproducir.
+  - [PLAY]             : reproduce los bytes WAV recibidos con pygame.
 
 Uso:
     python realtime.py
@@ -38,6 +39,29 @@ import speech_recognition as sr
 import gtts
 from faster_whisper import WhisperModel
 from deep_translator import GoogleTranslator
+from pydub import AudioSegment
+
+
+# ---------------------------------------------------------------------------
+# Helpers de audio
+# ---------------------------------------------------------------------------
+
+def _speed_up_mp3(mp3_bytes: bytes, speed: float = 1.30) -> bytes:
+    """
+    Recibe bytes de un MP3, devuelve bytes WAV acelerados `speed` veces.
+    La técnica de resampling (cambiar frame_rate antes de exportar) acelera
+    el audio sin perder calidad perceptible a factores moderados (1.2–1.5×).
+    Requiere ffmpeg en PATH para decodificar MP3.
+    """
+    audio = AudioSegment.from_mp3(BytesIO(mp3_bytes))
+    # Truco de resampling: subir frame_rate → reproducción más rápida → reajustar
+    faster = audio._spawn(
+        audio.raw_data,
+        overrides={"frame_rate": int(audio.frame_rate * speed)},
+    ).set_frame_rate(audio.frame_rate)
+    out = BytesIO()
+    faster.export(out, format="wav")
+    return out.getvalue()
 
 
 # ---------------------------------------------------------------------------
@@ -103,7 +127,6 @@ def capture_process(
     recognizer = sr.Recognizer()
     recognizer.energy_threshold = 300
     recognizer.dynamic_energy_threshold = True
-    # Fin de frase tras 0.8 s de silencio
     recognizer.pause_threshold = 0.8
 
     microphone = sr.Microphone(device_index=input_device_index)
@@ -115,13 +138,11 @@ def capture_process(
 
         while not stop_event.is_set():
             try:
-                # Espera hasta 5 s para detectar audio; acepta frases de hasta 30 s
-                audio = recognizer.listen(source, timeout=5, phrase_time_limit=30)
+                audio = recognizer.listen(source, timeout=5, phrase_time_limit=5)
                 wav_bytes = audio.get_wav_data()
                 audio_queue.put(wav_bytes)
                 print(f"[CAPTURA] Chunk → audio_queue  ({len(wav_bytes):,} bytes)")
             except sr.WaitTimeoutError:
-                # Sin audio en los últimos 5 s → reintentar
                 continue
             except Exception as exc:
                 print(f"[CAPTURA] Error: {exc}")
@@ -197,7 +218,7 @@ def translate_process(
     """
     needs_translation = input_lang != output_lang
     if needs_translation:
-        print(f"[TRANSLATE] Modo traducción activo: {input_lang} → {output_lang}\n")
+        print(f"[TRANSLATE] Modo traducción: {input_lang} → {output_lang}\n")
     else:
         print(f"[TRANSLATE] Sin traducción (entrada=salida={input_lang})\n")
 
@@ -226,23 +247,22 @@ def translate_process(
 
 
 # ---------------------------------------------------------------------------
-# ETAPA 4 — PLAY: translated_queue → gTTS → pygame → altavoz
+# ETAPA 4 — PREPROCES OUTPUT: translated_queue → gTTS + speed_up → output_queue
 # ---------------------------------------------------------------------------
 
-def play_process(
+def preproces_output_process(
     translated_queue: mp.Queue,
-    output_device_name: str,
+    output_queue: mp.Queue,
     output_lang: str,
     stop_event: mp.Event,
+    speed: float = 1.30,
 ):
     """
-    Toma texto de translated_queue, sintetiza voz con gTTS y lo reproduce
-    a través de pygame usando el dispositivo de salida indicado.
+    Toma texto de translated_queue, lo sintetiza con gTTS y acelera el audio
+    un `speed`× (por defecto 1.30 = +30 %).
+    Encola los bytes WAV resultantes en output_queue, listos para reproducir.
     """
-    print(f"[PLAY] Listo — altavoz: {output_device_name!r}\n")
-
-    # Inicializar pygame.mixer una sola vez en este proceso
-    pygame.mixer.init(devicename=output_device_name)
+    print(f"[PREPROCES] Listo — velocidad ×{speed:.2f}\n")
 
     while not stop_event.is_set() or not translated_queue.empty():
         try:
@@ -250,25 +270,67 @@ def play_process(
         except queue.Empty:
             continue
 
-        print(f"[PLAY] Sintetizando: {text!r}")
+        print(f"[PREPROCES] Sintetizando: {text!r}")
 
-        # Síntesis gTTS
+        # Síntesis gTTS → MP3 bytes
         t0 = time.time()
         try:
             tts = gtts.gTTS(text=text, lang=output_lang)
             mp3_buf = BytesIO()
             tts.write_to_fp(mp3_buf)
             mp3_buf.seek(0)
+            mp3_bytes = mp3_buf.read()
         except Exception as exc:
-            print(f"[PLAY] Error en gTTS: {exc}")
+            print(f"[PREPROCES] Error en gTTS: {exc}")
             continue
 
         dt_tts = time.time() - t0
-        print(f"[PLAY] gTTS listo ({dt_tts:.2f}s) — reproduciendo…")
 
-        # Reproducción
+        # Acelerar audio → WAV bytes
+        t1 = time.time()
         try:
-            pygame.mixer.music.load(mp3_buf)
+            wav_bytes = _speed_up_mp3(mp3_bytes, speed=speed)
+        except Exception as exc:
+            print(f"[PREPROCES] Error acelerando audio: {exc} — usando MP3 original")
+            # Fallback: pasar el MP3 sin accelerar
+            wav_bytes = mp3_bytes
+
+        dt_speed = time.time() - t1
+        print(
+            f"[PREPROCES] gTTS {dt_tts:.2f}s | acelerar {dt_speed:.2f}s "
+            f"→ output_queue ({len(wav_bytes):,} bytes)"
+        )
+        output_queue.put(wav_bytes)
+
+    print("[PREPROCES] Detenido.")
+
+
+# ---------------------------------------------------------------------------
+# ETAPA 5 — PLAY: output_queue → pygame → altavoz
+# ---------------------------------------------------------------------------
+
+def play_process(
+    output_queue: mp.Queue,
+    output_device_name: str,
+    stop_event: mp.Event,
+):
+    """
+    Toma bytes de audio (WAV) de output_queue y los reproduce con pygame
+    en el dispositivo de salida indicado.
+    """
+    print(f"[PLAY] Listo — altavoz: {output_device_name!r}\n")
+
+    pygame.mixer.init(devicename=output_device_name)
+
+    while not stop_event.is_set() or not output_queue.empty():
+        try:
+            audio_bytes = output_queue.get(timeout=1)
+        except queue.Empty:
+            continue
+
+        print(f"[PLAY] Reproduciendo ({len(audio_bytes):,} bytes)…")
+        try:
+            pygame.mixer.music.load(BytesIO(audio_bytes))
             pygame.mixer.music.play()
             while pygame.mixer.music.get_busy():
                 pygame.time.Clock().tick(20)
@@ -294,14 +356,15 @@ def main():
     input("\nPresiona Enter para comenzar (Ctrl+C para detener)…\n")
 
     # ── Buffers compartidos entre etapas ──────────────────────────────────────
-    audio_queue:      mp.Queue = mp.Queue(maxsize=20)   # bytes WAV
+    audio_queue:      mp.Queue = mp.Queue(maxsize=20)   # bytes WAV (captura)
     stt_queue:        mp.Queue = mp.Queue(maxsize=50)   # texto transcripto
     translated_queue: mp.Queue = mp.Queue(maxsize=50)   # texto (traducido o no)
+    output_queue:     mp.Queue = mp.Queue(maxsize=10)   # bytes WAV (audio final)
 
     # ── Señal de parada global ────────────────────────────────────────────────
     stop_event: mp.Event = mp.Event()
 
-    # ── Definición de los 4 procesos ─────────────────────────────────────────
+    # ── Definición de los 5 procesos ─────────────────────────────────────────
     p_capture = mp.Process(
         target=capture_process,
         args=(audio_queue, config["input_device_index"], stop_event),
@@ -329,34 +392,39 @@ def main():
         daemon=True,
     )
 
+    p_preproces = mp.Process(
+        target=preproces_output_process,
+        args=(translated_queue, output_queue, config["output_lang"], stop_event),
+        name="PreprocesOutput",
+        daemon=True,
+    )
+
     p_play = mp.Process(
         target=play_process,
-        args=(
-            translated_queue,
-            config["output_device_name"],
-            config["output_lang"],
-            stop_event,
-        ),
+        args=(output_queue, config["output_device_name"], stop_event),
         name="Play",
         daemon=True,
     )
 
     # ── Arranque ──────────────────────────────────────────────────────────────
-    for p in (p_capture, p_stt, p_translate, p_play):
+    for p in (p_capture, p_stt, p_translate, p_preproces, p_play):
         p.start()
 
-    print("[MAIN] Pipeline activo (4 procesos). Ctrl+C para detener.\n")
-    print("       CAPTURA → audio_queue → STT → stt_queue → TRANSLATE → translated_queue → PLAY\n")
+    print("[MAIN] Pipeline activo (5 procesos). Ctrl+C para detener.\n")
+    print(
+        "       CAPTURA → audio_queue → STT → stt_queue "
+        "→ TRANSLATE → translated_queue → PREPROCES → output_queue → PLAY\n"
+    )
 
     try:
-        while any(p.is_alive() for p in (p_capture, p_stt, p_translate, p_play)):
+        while any(p.is_alive() for p in (p_capture, p_stt, p_translate, p_preproces, p_play)):
             time.sleep(0.5)
     except KeyboardInterrupt:
         print("\n[MAIN] Interrupción recibida. Deteniendo pipeline…")
         stop_event.set()
 
     # ── Esperar terminación limpia (máx. 10 s cada proceso) ──────────────────
-    for p in (p_capture, p_stt, p_translate, p_play):
+    for p in (p_capture, p_stt, p_translate, p_preproces, p_play):
         p.join(timeout=10)
         if p.is_alive():
             print(f"[MAIN] Forzando terminación de {p.name}…")

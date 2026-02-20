@@ -13,4 +13,5 @@ dependencies = [
     "pyaudio>=0.2.14",
     "pygame>=2.6.1",
     "speechrecognition>=3.14.5",
+    "pydub>=0.25.1",
 ]
