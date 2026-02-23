@@ -85,3 +85,9 @@ uv run python realtime.py --mic 0 --speaker "MacBook Pro Speakers" --input-lang 
 [PREPROCES] TTS 0.15s | acelerar 0.05s → output_queue (76,800 bytes)
 [PLAY]      Reproduciendo (76,800 bytes)…
 ```
+
+---
+
+## Licencia
+
+Este proyecto está bajo la [Licencia MIT](LICENSE).
