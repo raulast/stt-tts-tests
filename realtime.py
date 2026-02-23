@@ -26,6 +26,7 @@ Flags disponibles:
   --input-lang LANG    : Idioma de entrada (es, en, etc).
   --output-lang LANG   : Idioma de salida (es, en, etc).
   --tts PROVIDER       : Proveedor de TTS (gtts, piper).
+  --set-manual         : Activa la configuración interactiva inicial.
   --skip-enter         : Salta el mensaje de "Presione Enter para comenzar".
 
 Ctrl+C para detener.
@@ -131,17 +132,60 @@ def list_tts_providers():
 # ---------------------------------------------------------------------------
 
 def get_config(args) -> dict:
-    """Combina flags de CLI con selección interactiva."""
+    """Combina flags de CLI con selección interactiva o valores por defecto."""
     
     config = {}
 
+    # --- Idiomas ---
+    # Por defecto: inglés -> español
+    config["input_lang"] = args.input_lang if (args.input_lang and args.input_lang in LANGS) else "en"
+    config["output_lang"] = args.output_lang if (args.output_lang and args.output_lang in LANGS) else "es"
+
+    if args.set_manual:
+        if not args.input_lang:
+            list_languages()
+            val = input(f"Idioma de entrada (actual: {config['input_lang']}): ").strip().lower()
+            if val in LANGS:
+                config["input_lang"] = val
+        if not args.output_lang:
+            list_languages()
+            val = input(f"Idioma de salida (actual: {config['output_lang']}): ").strip().lower()
+            if val in LANGS:
+                config["output_lang"] = val
+
+    # --- TTS Provider ---
+    config["tts_provider"] = args.tts if (args.tts and args.tts in TTS_PROVIDERS) else "gtts"
+    if args.set_manual and not args.tts:
+        list_tts_providers()
+        val = input(f"Proveedor de TTS (actual: {config['tts_provider']}): ").strip().lower()
+        if val in TTS_PROVIDERS:
+            config["tts_provider"] = val
+
     # --- Micrófono ---
-    # mic_names = sr.Microphone.list_microphone_names()
     if args.mic is not None:
         config["input_device_index"] = args.mic
+    elif not args.set_manual:
+        print("[CONFIG] Buscando micrófono funcionando...")
+        try:
+            working_mics = sr.Microphone.list_working_microphones()
+            if working_mics:
+                # El primero de los detectados como "funcionando"
+                idx = list(working_mics.keys())[0]
+                config["input_device_index"] = idx
+                print(f"[CONFIG] Micrófono detectado: [{idx}] {working_mics[idx]}")
+            else:
+                config["input_device_index"] = 0
+                print("[CONFIG] No se detectaron micrófonos funcionando. Usando índice 0.")
+        except Exception as e:
+            print(f"[CONFIG] Error detectando micrófonos: {e}. Usando índice 0.")
+            config["input_device_index"] = 0
     else:
         list_microphones()
-        config["input_device_index"] = int(input("Seleccione índice del micrófono: ").strip())
+        try:
+            val = input("Seleccione índice del micrófono: ").strip()
+            config["input_device_index"] = int(val) if val else 0
+        except ValueError:
+            config["input_device_index"] = 0
 
     # --- Altavoz ---
     pygame.mixer.init()
@@ -156,30 +200,23 @@ def get_config(args) -> dict:
         except (ValueError, IndexError):
             # Intentar como nombre
             config["output_device_name"] = args.speaker
+    elif not args.set_manual:
+        # Por defecto el actual del sistema
+        config["output_device_name"] = None 
+        print("[CONFIG] Altavoz: Predeterminado del sistema.")
     else:
         list_speakers()
-        idx = int(input("Seleccione índice del altavoz: ").strip())
-        config["output_device_name"] = speakers[idx]
+        try:
+            val = input("Seleccione índice del altavoz (Enter para predeterminado): ").strip()
+            if val:
+                idx = int(val)
+                config["output_device_name"] = speakers[idx]
+            else:
+                config["output_device_name"] = None
+        except (ValueError, IndexError):
+            config["output_device_name"] = None
 
-    # --- Idiomas ---
-    if args.input_lang and args.input_lang in LANGS:
-        config["input_lang"] = args.input_lang
-    else:
-        list_languages()
-        config["input_lang"] = input("Idioma de entrada (código): ").strip().lower()
-
-    if args.output_lang and args.output_lang in LANGS:
-        config["output_lang"] = args.output_lang
-    else:
-        list_languages()
-        config["output_lang"] = input("Idioma de salida (código): ").strip().lower()
-
-    # --- TTS Provider ---
-    if args.tts and args.tts in TTS_PROVIDERS:
-        config["tts_provider"] = args.tts
-    else:
-        list_tts_providers()
-        config["tts_provider"] = input("Proveedor de TTS (gtts/piper): ").strip().lower()
+    return config
 
     return config
 
@@ -402,7 +439,10 @@ def play_process(
     stop_event: mp.Event,
 ):
     print(f"[PLAY] Listo — altavoz: {output_device_name!r}\n")
-    pygame.mixer.init(devicename=output_device_name)
+    if output_device_name is None:
+        pygame.mixer.init()
+    else:
+        pygame.mixer.init(devicename=output_device_name)
 
     while not stop_event.is_set() or not output_queue.empty():
         try:
@@ -439,6 +479,7 @@ def main():
     parser.add_argument("--input-lang", type=str, help="Idioma de entrada (código, ej: es).")
     parser.add_argument("--output-lang", type=str, help="Idioma de salida (código, ej: en).")
     parser.add_argument("--tts", type=str, choices=TTS_PROVIDERS, help="Proveedor de TTS.")
+    parser.add_argument("--set-manual", action="store_true", help="Pide configuración manualmente.")
     parser.add_argument("--skip-enter", action="store_true", help="No esperar Enter para comenzar.")
     
     args = parser.parse_args()
